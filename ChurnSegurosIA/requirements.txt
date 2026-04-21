@@ -1,0 +1,8 @@
+fastapi
+uvicorn
+gunicorn
+pandas
+sqlalchemy
+pyodbc
+scikit-learn
+joblib

@@ -49,74 +49,77 @@ def health():
 @app.post("/predict")
 def predict(request: PrediccionRequest):
 
-    # 1. Obtener datos necesarios desde la base de datos
+    resultados_alto_riesgo = []
+
     with engine.begin() as conn:
 
+        # 1. Obtener cliente por RUT
         cliente = conn.execute(text("""
-            SELECT fecha_nacimiento, fecha_alta, nombre
+            SELECT cliente_id, nombre, fecha_nacimiento, fecha_alta
             FROM dbo.clientes
-            WHERE cliente_id = :cliente_id
-        """), {"cliente_id": request.cliente_id}).fetchone()
+            WHERE rut = :rut
+        """), {"rut": request.rut}).fetchone()
 
-        producto = conn.execute(text("""
-            SELECT nombre, prima_base
-            FROM dbo.productos
-            WHERE producto_id = :producto_id
-        """), {"producto_id": request.producto_id}).fetchone()
+        # 2. Obtener todos los productos activos del cliente
+        productos = conn.execute(text("""
+            SELECT p.producto_id, p.nombre, p.prima_base
+            FROM dbo.clientes_productos cp
+            JOIN dbo.productos p ON cp.producto_id = p.producto_id
+            WHERE cp.cliente_id = :cliente_id
+              AND cp.activo = 1
+        """), {"cliente_id": cliente.cliente_id}).fetchall()
 
-        reclamos = conn.execute(text("""
-            SELECT COUNT(*)
-            FROM dbo.reclamos
-            WHERE cliente_id = :cliente_id
-              AND producto_id = :producto_id
-        """), {
-            "cliente_id": request.cliente_id,
-            "producto_id": request.producto_id
-        }).scalar()
-
-    # 2. Calcular variables derivadas
     hoy = pd.Timestamp.now().date()
-
-    edad = (hoy - cliente.fecha_nacimiento).days // 365
     antiguedad = (hoy - cliente.fecha_alta).days // 365
 
-    # 3. Construir vector de entrada para la IA
-    df = pd.DataFrame([{
-        "antiguedad": antiguedad,
-        "num_siniestros": reclamos,
-        "prima_mensual": producto.prima_base,
-        "uso_contacto": reclamos,
-        "reclamos": reclamos
-    }])
+    # 3. Evaluar cada producto
+    for producto in productos:
 
-    # 4. Predicción
-    prob = model.predict_proba(df)[0][1]
-    prob_percent = round(prob * 100, 2)
+        with engine.begin() as conn:
+            reclamos = conn.execute(text("""
+                SELECT COUNT(*)
+                FROM dbo.reclamos
+                WHERE cliente_id = :cliente_id
+                  AND producto_id = :producto_id
+            """), {
+                "cliente_id": cliente.cliente_id,
+                "producto_id": producto.producto_id
+            }).scalar()
 
-    # 5. Guardar predicción en la base
-    with engine.begin() as conn:
-        conn.execute(text("""
-            INSERT INTO dbo.predictions
-            (cliente_id, producto_id, probabilidad_cancelacion)
-            VALUES (:cliente_id, :producto_id, :prob)
-        """), {
-            "cliente_id": request.cliente_id,
-            "producto_id": request.producto_id,
-            "prob": float(prob)
-        })
+        # Vector IA
+        df = pd.DataFrame([{
+            "antiguedad": antiguedad,
+            "num_siniestros": reclamos,
+            "prima_mensual": producto.prima_base,
+            "uso_contacto": reclamos,
+            "reclamos": reclamos
+        }])
 
-    # 6. Clasificar nivel de riesgo
-    if prob_percent >= 80:
-        nivel_riesgo = "ALTO"
-    elif prob_percent >= 40:
-        nivel_riesgo = "MEDIO"
-    else:
-        nivel_riesgo = "BAJO"
+        prob = model.predict_proba(df)[0][1]
+        prob_percent = round(prob * 100, 2)
 
-    # 7. Respuesta final 
+        # Guardar predicción
+        with engine.begin() as conn:
+            conn.execute(text("""
+                INSERT INTO dbo.predictions
+                (cliente_id, producto_id, probabilidad_cancelacion)
+                VALUES (:cliente_id, :producto_id, :prob)
+            """), {
+                "cliente_id": cliente.cliente_id,
+                "producto_id": producto.producto_id,
+                "prob": float(prob)
+            })
+
+        if prob_percent >= 80:
+            resultados_alto_riesgo.append({
+                "producto": producto.nombre,
+                "probabilidad_cancelacion": prob_percent,
+                "nivel_riesgo": "ALTO"
+            })
+
     return {
         "cliente": cliente.nombre,
-        "producto": producto.nombre,
-        "probabilidad_cancelacion": prob_percent,
-        "nivel_riesgo": nivel_riesgo
+        "rut": request.rut,
+        "tiene_riesgo_alto": len(resultados_alto_riesgo) > 0,
+        "productos_en_riesgo": resultados_alto_riesgo
     }
