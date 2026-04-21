@@ -1,10 +1,11 @@
 from fastapi import FastAPI
-from pydantic import BaseModel
 import pandas as pd
-from sklearn.linear_model import LogisticRegression
 import joblib
 import os
 from sqlalchemy import create_engine, text
+from sklearn.linear_model import LogisticRegression
+
+from ChurnSegurosIA.models.prediccion_request import PrediccionRequest
 
 # =========================
 # Conexión Azure SQL Server
@@ -26,158 +27,96 @@ engine = create_engine(DATABASE_URL)
 app = FastAPI()
 
 # =========================
-# Modelo (persistente)
+# Modelo IA (persistente)
 # =========================
 MODEL_PATH = "model.pkl"
 
 if os.path.exists(MODEL_PATH):
     model = joblib.load(MODEL_PATH)
 else:
-    # inicio frío
     model = LogisticRegression()
-    model.fit(
-        [[0, 0, 0, 0, 0]],
-        [0]
-    )
+    model.fit([[0, 0, 0, 0, 0]], [0])  # inicio mínimo
     joblib.dump(model, MODEL_PATH)
 
 # =========================
-# Schema de entrada
+# Endpoints
 # =========================
-class Cliente(BaseModel):
-    antiguedad: int
-    num_siniestros: int
-    prima_mensual: float
-    uso_contacto: int
-    reclamos: int
 
-# =========================
-# Endpoints base
-# =========================
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
-# =========================
-# Predicción + persistencia
-# =========================
 @app.post("/predict")
-def predict(client: Cliente):
-    df = pd.DataFrame([client.dict()])
+def predict(request: PrediccionRequest):
+
+    # 1. Obtener datos necesarios desde la base de datos
+    with engine.begin() as conn:
+
+        cliente = conn.execute(text("""
+            SELECT fecha_nacimiento, fecha_alta, nombre
+            FROM dbo.clientes
+            WHERE cliente_id = :cliente_id
+        """), {"cliente_id": request.cliente_id}).fetchone()
+
+        producto = conn.execute(text("""
+            SELECT nombre, prima_base
+            FROM dbo.productos
+            WHERE producto_id = :producto_id
+        """), {"producto_id": request.producto_id}).fetchone()
+
+        reclamos = conn.execute(text("""
+            SELECT COUNT(*)
+            FROM dbo.reclamos
+            WHERE cliente_id = :cliente_id
+              AND producto_id = :producto_id
+        """), {
+            "cliente_id": request.cliente_id,
+            "producto_id": request.producto_id
+        }).scalar()
+
+    # 2. Calcular variables derivadas
+    hoy = pd.Timestamp.now().date()
+
+    edad = (hoy - cliente.fecha_nacimiento).days // 365
+    antiguedad = (hoy - cliente.fecha_alta).days // 365
+
+    # 3. Construir vector de entrada para la IA
+    df = pd.DataFrame([{
+        "antiguedad": antiguedad,
+        "num_siniestros": reclamos,
+        "prima_mensual": producto.prima_base,
+        "uso_contacto": reclamos,
+        "reclamos": reclamos
+    }])
+
+    # 4. Predicción
     prob = model.predict_proba(df)[0][1]
+    prob_percent = round(prob * 100, 2)
 
+    # 5. Guardar predicción en la base
     with engine.begin() as conn:
-        conn.execute(
-            text("""
-                INSERT INTO dbo.predictions
-                (antiguedad, num_siniestros, prima_mensual, uso_contacto, reclamos, probabilidad_cancelacion)
-                VALUES
-                (:antiguedad, :num_siniestros, :prima_mensual, :uso_contacto, :reclamos, :prob)
-            """),
-            {
-                "antiguedad": client.antiguedad,
-                "num_siniestros": client.num_siniestros,
-                "prima_mensual": client.prima_mensual,
-                "uso_contacto": client.uso_contacto,
-                "reclamos": client.reclamos,
-                "prob": float(prob)
-            }
-        )
+        conn.execute(text("""
+            INSERT INTO dbo.predictions
+            (cliente_id, producto_id, probabilidad_cancelacion)
+            VALUES (:cliente_id, :producto_id, :prob)
+        """), {
+            "cliente_id": request.cliente_id,
+            "producto_id": request.producto_id,
+            "prob": float(prob)
+        })
 
-    return {"probabilidad_cancelacion": round(prob * 100, 2)}
+    # 6. Clasificar nivel de riesgo
+    if prob_percent >= 80:
+        nivel_riesgo = "ALTO"
+    elif prob_percent >= 40:
+        nivel_riesgo = "MEDIO"
+    else:
+        nivel_riesgo = "BAJO"
 
-# =========================
-# Consulta histórica
-# =========================
-@app.get("/predictions")
-def get_predictions(limit: int = 20):
-    with engine.begin() as conn:
-        result = conn.execute(
-            text("""
-                SELECT TOP (:limit)
-                    id,
-                    antiguedad,
-                    num_siniestros,
-                    prima_mensual,
-                    uso_contacto,
-                    reclamos,
-                    ROUND(probabilidad_cancelacion * 100, 2) AS probabilidad_percent,
-                    created_at
-                FROM dbo.predictions
-                ORDER BY created_at DESC
-            """),
-            {"limit": limit}
-        )
-        return [dict(row._mapping) for row in result]
-
-# =========================
-# Segmentación de riesgo
-# =========================
-@app.get("/risk-segments")
-def risk_segments():
-    with engine.begin() as conn:
-        result = conn.execute(text("""
-            SELECT
-                CASE
-                    WHEN probabilidad_cancelacion >= 0.8 THEN 'ALTO'
-                    WHEN probabilidad_cancelacion >= 0.4 THEN 'MEDIO'
-                    ELSE 'BAJO'
-                END AS nivel_riesgo,
-                COUNT(*) AS cantidad
-            FROM dbo.predictions
-            GROUP BY
-                CASE
-                    WHEN probabilidad_cancelacion >= 0.8 THEN 'ALTO'
-                    WHEN probabilidad_cancelacion >= 0.4 THEN 'MEDIO'
-                    ELSE 'BAJO'
-                END
-        """))
-        return [dict(row._mapping) for row in result]
-
-# =========================
-# Perfil típico alto riesgo
-# =========================
-@app.get("/high-risk-profile")
-def high_risk_profile():
-    with engine.begin() as conn:
-        result = conn.execute(text("""
-            SELECT
-                AVG(antiguedad) AS avg_antiguedad,
-                AVG(num_siniestros) AS avg_siniestros,
-                AVG(prima_mensual) AS avg_prima,
-                AVG(uso_contacto) AS avg_contacto,
-                AVG(reclamos) AS avg_reclamos
-            FROM dbo.predictions
-            WHERE probabilidad_cancelacion >= 0.8
-        """))
-        return dict(result.fetchone()._mapping)
-
-# =========================
-# Reentrenamiento real
-# =========================
-@app.post("/retrain-from-db")
-def retrain_from_db():
-    df = pd.read_sql("""
-        SELECT
-            antiguedad,
-            num_siniestros,
-            prima_mensual,
-            uso_contacto,
-            reclamos,
-            probabilidad_cancelacion
-        FROM dbo.predictions
-    """, engine)
-
-    if len(df) < 5:
-        return {"error": "No hay suficientes datos"}
-
-    X_new = df.drop("probabilidad_cancelacion", axis=1)
-    y_new = (df["probabilidad_cancelacion"] >= 0.5).astype(int)
-
-    model.fit(X_new, y_new)
-    joblib.dump(model, MODEL_PATH)
-
+    # 7. Respuesta final orientada a negocio
     return {
-        "status": "model retrained",
-        "rows_used": len(df)
+        "cliente": cliente.nombre,
+        "producto": producto.nombre,
+        "probabilidad_cancelacion": prob_percent,
+        "nivel_riesgo": nivel_riesgo
     }
