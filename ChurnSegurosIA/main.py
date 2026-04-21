@@ -113,7 +113,7 @@ def predict(request: PrediccionRequest):
     else:
         nivel_riesgo = "BAJO"
 
-    # 7. Respuesta final orientada a negocio
+    # 7. Respuesta final 
     return {
         "cliente": cliente.nombre,
         "producto": producto.nombre,
