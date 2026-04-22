@@ -5,7 +5,7 @@ import os
 from sqlalchemy import create_engine, text
 from sklearn.linear_model import LogisticRegression
 
-from ChurnSegurosIA.models.prediccion_request import PrediccionRequest
+from models.prediccion_request import PrediccionRequest
 
 # =========================
 # Configuración Base de Datos (Azure SQL)
@@ -25,14 +25,15 @@ app = FastAPI(title="Churn Seguros IA API")
 # =========================
 # Modelo IA (persistente)
 # =========================
-MODEL_PATH = "model.pkl"
+MODEL_PATH = os.path.join(os.path.dirname(__file__), "model.pkl")
 
 if os.path.exists(MODEL_PATH):
     model = joblib.load(MODEL_PATH)
 else:
     model = LogisticRegression()
-    model.fit([[0, 0, 0, 0, 0]], [0])  # inicialización mínima
-    joblib.dump(model, MODEL_PATH)
+    X_dummy = [[0, 0, 0, 0, 0], [1, 1, 1, 1, 1]]
+    y_dummy = [0, 1]
+    model.fit(X_dummy, y_dummy)
 
 # =========================
 # Endpoints

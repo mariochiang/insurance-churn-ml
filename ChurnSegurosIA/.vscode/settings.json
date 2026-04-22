@@ -1,0 +1,4 @@
+{
+    "appService.defaultWebAppToDeploy": "/subscriptions/1b4de189-b20a-4e30-a852-f7af0c06084d/resourceGroups/api-churn-ia_group/providers/Microsoft.Web/sites/api-churn-ia",
+    "appService.deploySubpath": "."
+}
