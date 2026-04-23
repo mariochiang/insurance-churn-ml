@@ -96,6 +96,13 @@ def limpiar_rut(rut):
     return rut.strip()
 
 
+def normalizar_rut(rut):
+    if not rut:
+        return ""
+
+    return rut.strip().replace(".", "").replace("-", "").upper()
+
+
 def calcular_antiguedad(fecha_alta):
     if not fecha_alta:
         return 0
@@ -193,15 +200,17 @@ def generar_respuesta_chat(cliente_nombre, nombres_productos, mensaje):
 
 
 def obtener_cliente_y_productos(conn, rut):
+    rut_normalizado = normalizar_rut(rut)
+
     cliente = conn.execute(
         text(
             """
-            SELECT cliente_id, nombre, fecha_nacimiento, fecha_alta
+            SELECT cliente_id, rut, nombre, fecha_nacimiento, fecha_alta
             FROM dbo.clientes
-            WHERE rut = :rut
+            WHERE REPLACE(REPLACE(UPPER(rut), '.', ''), '-', '') = :rut_normalizado
             """
         ),
-        {"rut": rut},
+        {"rut_normalizado": rut_normalizado},
     ).fetchone()
 
     if not cliente:
@@ -270,7 +279,7 @@ def chat(request: ChatRequest):
         return {
             "cliente_identificado": True,
             "cliente": cliente.nombre,
-            "rut": rut,
+            "rut": cliente.rut,
             "productos": nombres_productos,
             "respuesta": respuesta,
         }
@@ -307,7 +316,7 @@ def predict(request: PrediccionRequest):
             if not productos:
                 return {
                     "cliente": cliente.nombre,
-                    "rut": rut,
+                    "rut": cliente.rut,
                     "productos_evaluados": 0,
                     "tiene_riesgo_alto": False,
                     "productos_en_riesgo": [],
@@ -386,7 +395,7 @@ def predict(request: PrediccionRequest):
 
         return {
             "cliente": cliente.nombre,
-            "rut": rut,
+            "rut": cliente.rut,
             "productos_evaluados": len(productos),
             "tiene_riesgo_alto": len(resultados_alto_riesgo) > 0,
             "productos_en_riesgo": resultados_alto_riesgo,
