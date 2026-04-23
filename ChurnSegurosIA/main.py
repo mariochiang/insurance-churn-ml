@@ -133,6 +133,65 @@ def formatear_lista_productos(productos):
     return ", ".join(productos[:-1]) + " y " + productos[-1]
 
 
+def generar_respuesta_chat(cliente_nombre, nombres_productos, mensaje):
+    mensaje_limpio = (mensaje or "").strip()
+    mensaje_normalizado = mensaje_limpio.lower()
+
+    if not mensaje_limpio or mensaje_normalizado in {"hola", "hola!", "buenas"}:
+        if nombres_productos:
+            productos_texto = formatear_lista_productos(nombres_productos)
+
+            if len(nombres_productos) == 1:
+                texto_productos = (
+                    f"Actualmente tienes contratado: {productos_texto}."
+                )
+            else:
+                texto_productos = (
+                    f"Actualmente tienes contratados: {productos_texto}."
+                )
+
+            return (
+                f"Hola {cliente_nombre}, gracias por contactarnos. "
+                f"{texto_productos} "
+                "En que puedo ayudarte hoy?"
+            )
+
+        return (
+            f"Hola {cliente_nombre}, gracias por contactarnos. "
+            "Actualmente no veo productos activos asociados a tu cuenta. "
+            "En que puedo ayudarte hoy?"
+        )
+
+    if "reclamo" in mensaje_normalizado or "problema" in mensaje_normalizado:
+        return (
+            "Puedo orientarte con un reclamo. En la siguiente version "
+            "registraremos el caso automaticamente; por ahora te recomiendo "
+            "indicar el producto y una breve descripcion del problema."
+        )
+
+    if "siniestro" in mensaje_normalizado or "choque" in mensaje_normalizado:
+        return (
+            "Entiendo. Para un siniestro necesitaremos fecha, lugar, producto "
+            "asociado y una descripcion breve. Pronto conectaremos este flujo "
+            "al registro de casos."
+        )
+
+    if "cancelar" in mensaje_normalizado or "baja" in mensaje_normalizado:
+        return (
+            "Puedo ayudarte con esa solicitud. Antes de avanzar, un ejecutivo "
+            "deberia revisar alternativas segun tus productos vigentes."
+        )
+
+    if nombres_productos:
+        return (
+            "Tengo registrado que tus productos activos son: "
+            f"{', '.join(nombres_productos)}. Puedes contarme que necesitas y "
+            "te orientare con el siguiente paso."
+        )
+
+    return "Cuentame un poco mas sobre lo que necesitas y te orientare con el siguiente paso."
+
+
 def obtener_cliente_y_productos(conn, rut):
     cliente = conn.execute(
         text(
@@ -175,6 +234,7 @@ def health():
 @app.post("/chat")
 def chat(request: ChatRequest):
     rut = limpiar_rut(request.rut)
+    mensaje = request.mensaje
 
     if not rut:
         return {
@@ -201,29 +261,11 @@ def chat(request: ChatRequest):
 
         nombres_productos = [producto.nombre for producto in productos]
 
-        if nombres_productos:
-            productos_texto = formatear_lista_productos(nombres_productos)
-
-            if len(nombres_productos) == 1:
-                texto_productos = (
-                    f"Actualmente tienes contratado: {productos_texto}."
-                )
-            else:
-                texto_productos = (
-                    f"Actualmente tienes contratados: {productos_texto}."
-                )
-
-            respuesta = (
-                f"Hola {cliente.nombre}, gracias por contactarnos. "
-                f"{texto_productos} "
-                "En que puedo ayudarte hoy?"
-            )
-        else:
-            respuesta = (
-                f"Hola {cliente.nombre}, gracias por contactarnos. "
-                "Actualmente no veo productos activos asociados a tu cuenta. "
-                "En que puedo ayudarte hoy?"
-            )
+        respuesta = generar_respuesta_chat(
+            cliente_nombre=cliente.nombre,
+            nombres_productos=nombres_productos,
+            mensaje=mensaje,
+        )
 
         return {
             "cliente_identificado": True,
