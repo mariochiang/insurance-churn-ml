@@ -232,12 +232,59 @@ def obtener_cliente_y_productos(conn, rut):
     return cliente, productos
 
 
+def obtener_productos_disponibles(conn):
+    productos = conn.execute(
+        text(
+            """
+            SELECT producto_id, nombre, prima_base
+            FROM dbo.productos
+            ORDER BY nombre
+            """
+        )
+    ).fetchall()
+
+    return [
+        {
+            "producto_id": producto.producto_id,
+            "nombre": producto.nombre,
+            "prima_base": float(producto.prima_base or 0),
+        }
+        for producto in productos
+    ]
+
+
 # =========================
 # Endpoints
 # =========================
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+
+@app.get("/productos")
+def productos():
+    try:
+        with engine.begin() as conn:
+            productos_disponibles = obtener_productos_disponibles(conn)
+
+        return {
+            "total": len(productos_disponibles),
+            "productos": productos_disponibles,
+        }
+
+    except SQLAlchemyError:
+        logger.exception("Error consultando productos")
+        raise HTTPException(
+            status_code=500,
+            detail="Error consultando productos",
+        )
+
+    except Exception:
+        logger.exception("Error inesperado consultando productos")
+        raise HTTPException(
+            status_code=500,
+            detail="Error inesperado consultando productos",
+        )
 
 
 @app.post("/chat")
