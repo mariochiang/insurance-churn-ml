@@ -8,7 +8,7 @@ from sqlalchemy import create_engine, text, bindparam
 from sqlalchemy.exc import SQLAlchemyError
 from sklearn.linear_model import LogisticRegression
 
-from models.prediccion_request import PrediccionRequest
+from models.prediccion_request import PrediccionRequest, ChatRequest
 
 
 # =========================
@@ -89,6 +89,13 @@ else:
 # =========================
 # Helpers
 # =========================
+def limpiar_rut(rut):
+    if not rut:
+        return ""
+
+    return rut.strip()
+
+
 def calcular_antiguedad(fecha_alta):
     if not fecha_alta:
         return 0
@@ -116,6 +123,47 @@ def crear_dataframe_prediccion(antiguedad, reclamos, prima_base):
     )
 
 
+def formatear_lista_productos(productos):
+    if not productos:
+        return ""
+
+    if len(productos) == 1:
+        return productos[0]
+
+    return ", ".join(productos[:-1]) + " y " + productos[-1]
+
+
+def obtener_cliente_y_productos(conn, rut):
+    cliente = conn.execute(
+        text(
+            """
+            SELECT cliente_id, nombre, fecha_nacimiento, fecha_alta
+            FROM dbo.clientes
+            WHERE rut = :rut
+            """
+        ),
+        {"rut": rut},
+    ).fetchone()
+
+    if not cliente:
+        return None, []
+
+    productos = conn.execute(
+        text(
+            """
+            SELECT p.producto_id, p.nombre, p.prima_base
+            FROM dbo.clientes_productos cp
+            JOIN dbo.productos p ON cp.producto_id = p.producto_id
+            WHERE cp.cliente_id = :cliente_id
+              AND cp.activo = 1
+            """
+        ),
+        {"cliente_id": cliente.cliente_id},
+    ).fetchall()
+
+    return cliente, productos
+
+
 # =========================
 # Endpoints
 # =========================
@@ -124,41 +172,85 @@ def health():
     return {"status": "ok"}
 
 
+@app.post("/chat")
+def chat(request: ChatRequest):
+    rut = limpiar_rut(request.rut)
+
+    if not rut:
+        return {
+            "cliente_identificado": False,
+            "cliente": None,
+            "productos": [],
+            "respuesta": "Hola, para poder ayudarte por favor indicame tu RUT.",
+        }
+
+    try:
+        with engine.begin() as conn:
+            cliente, productos = obtener_cliente_y_productos(conn, rut)
+
+        if not cliente:
+            return {
+                "cliente_identificado": False,
+                "cliente": None,
+                "productos": [],
+                "respuesta": (
+                    "No pude encontrar un cliente asociado a ese RUT. "
+                    "Por favor verifica el dato e intentalo nuevamente."
+                ),
+            }
+
+        nombres_productos = [producto.nombre for producto in productos]
+
+        if nombres_productos:
+            productos_texto = formatear_lista_productos(nombres_productos)
+            respuesta = (
+                f"Hola {cliente.nombre}, gracias por contactarnos. "
+                f"Actualmente tienes contratado: {productos_texto}. "
+                "En que puedo ayudarte hoy?"
+            )
+        else:
+            respuesta = (
+                f"Hola {cliente.nombre}, gracias por contactarnos. "
+                "Actualmente no veo productos activos asociados a tu cuenta. "
+                "En que puedo ayudarte hoy?"
+            )
+
+        return {
+            "cliente_identificado": True,
+            "cliente": cliente.nombre,
+            "rut": rut,
+            "productos": nombres_productos,
+            "respuesta": respuesta,
+        }
+
+    except SQLAlchemyError:
+        logger.exception("Error consultando la base de datos desde el chat")
+        raise HTTPException(
+            status_code=500,
+            detail="Error consultando la base de datos",
+        )
+
+    except Exception:
+        logger.exception("Error inesperado en el chat")
+        raise HTTPException(
+            status_code=500,
+            detail="Error inesperado en el chat",
+        )
+
+
 @app.post("/predict")
 def predict(request: PrediccionRequest):
-    rut = request.rut.strip()
+    rut = limpiar_rut(request.rut)
 
     if not rut:
         raise HTTPException(status_code=400, detail="El RUT es obligatorio")
 
     try:
         with engine.begin() as conn:
-            cliente = conn.execute(
-                text(
-                    """
-                    SELECT cliente_id, nombre, fecha_nacimiento, fecha_alta
-                    FROM dbo.clientes
-                    WHERE rut = :rut
-                    """
-                ),
-                {"rut": rut},
-            ).fetchone()
+            cliente, productos = obtener_cliente_y_productos(conn, rut)
 
             if not cliente:
                 raise HTTPException(status_code=404, detail="Cliente no encontrado")
-
-            productos = conn.execute(
-                text(
-                    """
-                    SELECT p.producto_id, p.nombre, p.prima_base
-                    FROM dbo.clientes_productos cp
-                    JOIN dbo.productos p ON cp.producto_id = p.producto_id
-                    WHERE cp.cliente_id = :cliente_id
-                      AND cp.activo = 1
-                    """
-                ),
-                {"cliente_id": cliente.cliente_id},
-            ).fetchall()
 
             if not productos:
                 return {
