@@ -236,7 +236,7 @@ def obtener_productos_disponibles(conn):
     productos = conn.execute(
         text(
             """
-            SELECT producto_id, nombre, prima_base
+            SELECT producto_id, nombre, prima_base, categoria_visual
             FROM dbo.productos
             ORDER BY nombre
             """
@@ -248,6 +248,7 @@ def obtener_productos_disponibles(conn):
             "producto_id": producto.producto_id,
             "nombre": producto.nombre,
             "prima_base": float(producto.prima_base or 0),
+            "categoria_visual": producto.categoria_visual,
         }
         for producto in productos
     ]
