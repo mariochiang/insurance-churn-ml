@@ -203,9 +203,19 @@ def chat(request: ChatRequest):
 
         if nombres_productos:
             productos_texto = formatear_lista_productos(nombres_productos)
+
+            if len(nombres_productos) == 1:
+                texto_productos = (
+                    f"Actualmente tienes contratado: {productos_texto}."
+                )
+            else:
+                texto_productos = (
+                    f"Actualmente tienes contratados: {productos_texto}."
+                )
+
             respuesta = (
                 f"Hola {cliente.nombre}, gracias por contactarnos. "
-                f"Actualmente tienes contratado: {productos_texto}. "
+                f"{texto_productos} "
                 "En que puedo ayudarte hoy?"
             )
         else:
